@@ -3,8 +3,9 @@ name: macOS CI
 on:
   pull_request:
   push:
+    branches:
       - main
-      - my-mixed-tab-fix 
+      - my-mixed-tab-fix
   workflow_dispatch:
 
 permissions:
