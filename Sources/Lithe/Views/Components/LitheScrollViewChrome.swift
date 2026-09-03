@@ -1,0 +1,140 @@
+import AppKit
+import SwiftUI
+
+/// Keeps SwiftUI scroll views visually close to IntelliJ's overlay scrollers.
+/// SwiftUI otherwise inherits the user's macOS "Always show scroll bars"
+/// setting, which can turn a compact tool window into a set of bright, thick
+/// tracks. The probe configures only the enclosing NSScrollView and occupies
+/// no visible content of its own.
+struct LitheScrollViewChrome: NSViewRepresentable {
+    var hideHorizontal = false
+    var alwaysShowVertical = false
+
+    func makeNSView(context: Context) -> ScrollViewProbe {
+        ScrollViewProbe(hideHorizontal: hideHorizontal, alwaysShowVertical: alwaysShowVertical)
+    }
+
+    func updateNSView(_ nsView: ScrollViewProbe, context: Context) {
+        nsView.hideHorizontal = hideHorizontal
+        nsView.alwaysShowVertical = alwaysShowVertical
+        nsView.configureEnclosingScrollView()
+    }
+
+    final class ScrollViewProbe: NSView {
+        var hideHorizontal: Bool
+        var alwaysShowVertical: Bool
+        private weak var configuredScrollView: NSScrollView?
+        private var scrollWheelMonitor: Any?
+
+        init(hideHorizontal: Bool, alwaysShowVertical: Bool) {
+            self.hideHorizontal = hideHorizontal
+            self.alwaysShowVertical = alwaysShowVertical
+            super.init(frame: .zero)
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) has not been implemented")
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window == nil {
+                removeScrollWheelMonitor()
+            }
+            configureEnclosingScrollView()
+        }
+
+        override func layout() {
+            super.layout()
+            configureEnclosingScrollView()
+        }
+
+        /// Assigning any of these properties makes AppKit re-tile the scroll view,
+        /// which calls back into `layout()`. Writing only genuine changes keeps
+        /// that from becoming a layout feedback loop on every redraw.
+        func configureEnclosingScrollView() {
+            guard let scrollView = enclosingScrollView else { return }
+
+            let scrollerStyle: NSScroller.Style = alwaysShowVertical ? .legacy : .overlay
+            if scrollView.scrollerStyle != scrollerStyle {
+                scrollView.scrollerStyle = scrollerStyle
+            }
+            if scrollView.autohidesScrollers != !alwaysShowVertical {
+                scrollView.autohidesScrollers = !alwaysShowVertical
+            }
+            if !scrollView.hasVerticalScroller {
+                scrollView.hasVerticalScroller = true
+            }
+            if scrollView.verticalScroller?.knobStyle != .dark {
+                scrollView.verticalScroller?.knobStyle = .dark
+            }
+            if scrollView.horizontalScroller?.knobStyle != .dark {
+                scrollView.horizontalScroller?.knobStyle = .dark
+            }
+
+            if hideHorizontal {
+                if scrollView.hasHorizontalScroller {
+                    scrollView.hasHorizontalScroller = false
+                }
+                if scrollView.horizontalScrollElasticity != .none {
+                    scrollView.horizontalScrollElasticity = .none
+                }
+            }
+            configureScrollWheelMonitor(for: scrollView)
+        }
+
+        deinit {
+            removeScrollWheelMonitor()
+        }
+
+        private func configureScrollWheelMonitor(for scrollView: NSScrollView) {
+            guard alwaysShowVertical else {
+                removeScrollWheelMonitor()
+                configuredScrollView = nil
+                return
+            }
+            guard configuredScrollView !== scrollView || scrollWheelMonitor == nil else { return }
+            removeScrollWheelMonitor()
+            configuredScrollView = scrollView
+            scrollWheelMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self, weak scrollView] event in
+                guard let self,
+                      let scrollView,
+                      self.isEvent(event, inside: scrollView),
+                      self.canScrollVertically(scrollView) else { return event }
+                scrollView.scrollWheel(with: event)
+                return nil
+            }
+        }
+
+        private func removeScrollWheelMonitor() {
+            if let scrollWheelMonitor {
+                NSEvent.removeMonitor(scrollWheelMonitor)
+                self.scrollWheelMonitor = nil
+            }
+        }
+
+        private func isEvent(_ event: NSEvent, inside scrollView: NSScrollView) -> Bool {
+            guard event.window === scrollView.window else { return false }
+            let point = scrollView.convert(event.locationInWindow, from: nil)
+            return scrollView.bounds.contains(point)
+        }
+
+        private func canScrollVertically(_ scrollView: NSScrollView) -> Bool {
+            guard let documentView = scrollView.documentView else { return false }
+            return documentView.bounds.height > scrollView.contentView.bounds.height + 0.5
+        }
+    }
+}
+
+extension View {
+    func litheScrollViewChrome(
+        hideHorizontal: Bool = false,
+        alwaysShowVertical: Bool = false
+    ) -> some View {
+        background(LitheScrollViewChrome(
+            hideHorizontal: hideHorizontal,
+            alwaysShowVertical: alwaysShowVertical
+        ))
+    }
+}
