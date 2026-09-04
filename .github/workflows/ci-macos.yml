@@ -304,28 +304,122 @@ jobs:
           EOF
           chmod +x /tmp/lithe-windows.applescript
 
-      - name: Launch app and capture screenshots
+      - name: Create fixture project
+        run: |
+          set -euo pipefail
+          FX="ci-fixture-project"
+          mkdir -p "$FX"
+          printf 'def hello():\n    print("Hello Lithe CI fixture")\n\nif __name__ == "__main__":\n    hello()\n' > "$FX/main.py"
+          printf 'def add(a, b):\n    return a + b\n' > "$FX/utils.py"
+          printf '# CI Fixture Project\n\nMinimal project for UI drag/dock validation.\n' > "$FX/README.md"
+          printf '{\n  "name": "ci-fixture",\n  "version": "1.0"\n}\n' > "$FX/config.json"
+          echo "FIXTURE_DIR=$(pwd)/$FX" >> "$GITHUB_ENV"
+          ls -la "$FX"
+
+      - name: Install cliclick
+        run: |
+          set -uo pipefail
+          if command -v cliclick >/dev/null 2>&1; then
+            echo "cliclick already installed: $(cliclick --version 2>&1 || true)"
+          else
+            echo "Installing cliclick via brew..."
+            brew install cliclick || {
+              echo "brew install failed, trying direct download..."
+              curl -L -o /tmp/cliclick.zip https://github.com/bernhardkaindl/cliclick/releases/download/5.0/cliclick.zip || true
+              if [ -f /tmp/cliclick.zip ]; then
+                unzip -o /tmp/cliclick.zip -d /tmp/cliclick-bin >/dev/null 2>&1 || true
+                cp /tmp/cliclick-bin/cliclick /usr/local/bin/ 2>/dev/null || sudo cp /tmp/cliclick-bin/cliclick /usr/local/bin/ 2>/dev/null || true
+              fi
+            }
+            chmod +x /usr/local/bin/cliclick 2>/dev/null || true
+          fi
+          command -v cliclick >/dev/null 2>&1 && echo "cliclick ready: $(cliclick --version 2>&1 || true)" || echo "WARNING: cliclick not available"
+
+      - name: Launch app with project + drag/dock tests
         run: |
           set -uo pipefail
           mkdir -p ui-shots
-          open -n "$APP_DIR"
-          echo "Launched. Waiting for window to render..."
-          sleep 25
-          screencapture -x ui-shots/01-fullscreen.png || echo "screencapture failed"
+          FIXTURE="$(pwd)/ci-fixture-project"
+          echo "Launching with --open-project $FIXTURE"
+          open -n "$APP_DIR" --args --open-project "$FIXTURE"
+          echo "Launched. Waiting for workbench to render..."
+          sleep 35
+          screencapture -x ui-shots/00-workbench-initial.png || echo "screencapture failed"
           LITHE_PID=$(pgrep -f "Lithe.app/Contents/MacOS/Lithe" | head -1 || true)
           echo "Lithe PID: ${LITHE_PID:-none}"
-          if [ -n "${LITHE_PID:-}" ]; then
-            osascript /tmp/lithe-windows.applescript || true
-            sleep 3
-            screencapture -x ui-shots/02-after-render.png || true
-          fi
-          sleep 10
-          screencapture -x ui-shots/03-settled.png || true
           osascript /tmp/lithe-windows.applescript > ui-shots/window-hierarchy.txt 2>&1 || true
+          cat ui-shots/window-hierarchy.txt 2>/dev/null || true
+
+          if ! command -v cliclick >/dev/null 2>&1; then
+            echo "cliclick unavailable, skipping drag tests"
+            pkill -f "Lithe.app/Contents/MacOS/Lithe" 2>/dev/null || true
+            exit 0
+          fi
+
+          # Bring Lithe window to front
+          osascript -e 'tell application "System Events" to set frontmost of (first process whose name contains "Lithe") to true' 2>/dev/null || true
+          sleep 2
+
+          # Window geometry (assume full-screen-ish on runner; adjust by probing)
+          # Runner display is typically 1920x1080 or similar. Use relative coords.
+          # Tab bar: top-center area. Left dock: left edge. Right dock: right edge. Bottom: bottom edge.
+          # We probe actual window frame first.
+          GEO=$(osascript -e 'tell application "System Events" to tell (first process whose name contains "Lithe") to get {position, size} of window 1' 2>/dev/null || echo "missing 0 0 1200 800")
+          echo "Window geo: $GEO"
+          # Parse: "x, y, w, h"
+          WX=$(echo "$GEO" | awk -F', ' '{print $1}')
+          WY=$(echo "$GEO" | awk -F', ' '{print $2}')
+          WW=$(echo "$GEO" | awk -F', ' '{print $3}')
+          WH=$(echo "$GEO" | awk -F', ' '{print $4}')
+          [ -z "$WX" ] && WX=100
+          [ -z "$WY" ] && WY=100
+          [ -z "$WW" ] && WW=1200
+          [ -z "$WH" ] && WH=800
+          echo "Window: x=$WX y=$WY w=$WW h=$WH"
+
+          # Key coordinates (relative to window origin)
+          TAB_X=$((WX + WW/2))
+          TAB_Y=$((WY + 45))        # tab bar row
+          LEFT_X=$((WX + 180))      # left sidebar center
+          LEFT_Y=$((WY + WH/2))
+          RIGHT_X=$((WX + WW - 190)) # right sidebar center
+          RIGHT_Y=$((WY + WH/2))
+          BOTTOM_X=$((WX + WW/2))
+          BOTTOM_Y=$((WY + WH - 60)) # bottom tool area
+          echo "Tab: $TAB_X,$TAB_Y | Left: $LEFT_X,$LEFT_Y | Right: $RIGHT_X,$RIGHT_Y | Bottom: $BOTTOM_X,$BOTTOM_Y"
+
+          # --- Drag 1: tab -> left sidebar (dock left) ---
+          echo "=== Drag 1: tab to LEFT ==="
+          cliclick "m:$TAB_X,$TAB_Y" "d:$TAB_X,$TAB_Y" "m:$LEFT_X,$LEFT_Y" "u:$LEFT_X,$LEFT_Y" 2>&1 || echo "drag1 failed"
+          sleep 4
+          screencapture -x ui-shots/01-dock-left.png || true
+
+          # --- Drag 2: tab -> right sidebar (dock right) ---
+          echo "=== Drag 2: tab to RIGHT ==="
+          cliclick "m:$TAB_X,$TAB_Y" "d:$TAB_X,$TAB_Y" "m:$RIGHT_X,$RIGHT_Y" "u:$RIGHT_X,$RIGHT_Y" 2>&1 || echo "drag2 failed"
+          sleep 4
+          screencapture -x ui-shots/02-dock-right.png || true
+
+          # --- Drag 3: tab -> bottom (dock bottom) ---
+          echo "=== Drag 3: tab to BOTTOM ==="
+          cliclick "m:$TAB_X,$TAB_Y" "d:$TAB_X,$TAB_Y" "m:$BOTTOM_X,$BOTTOM_Y" "u:$BOTTOM_X,$BOTTOM_Y" 2>&1 || echo "drag3 failed"
+          sleep 4
+          screencapture -x ui-shots/03-dock-bottom.png || true
+
+          # --- Drag 4: tab swap (drag tab to another tab position) ---
+          echo "=== Drag 4: tab SWAP ---"
+          SWAP_X=$((TAB_X + 120))
+          SWAP_Y=$TAB_Y
+          cliclick "m:$TAB_X,$TAB_Y" "d:$TAB_X,$TAB_Y" "m:$SWAP_X,$SWAP_Y" "u:$SWAP_X,$SWAP_Y" 2>&1 || echo "drag4 failed"
+          sleep 4
+          screencapture -x ui-shots/04-tab-swap.png || true
+
+          # Final settled shot
+          sleep 5
+          screencapture -x ui-shots/05-final.png || true
+
           echo "=== Screenshots ==="
           ls -la ui-shots/
-          echo "=== Window hierarchy ==="
-          cat ui-shots/window-hierarchy.txt 2>/dev/null || echo "(no hierarchy dump)"
           pkill -f "Lithe.app/Contents/MacOS/Lithe" 2>/dev/null || true
 
       - name: Upload screenshots
