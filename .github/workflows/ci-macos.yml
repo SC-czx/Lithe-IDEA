@@ -230,6 +230,121 @@ jobs:
       - name: Build and verify host architecture package
         run: ./scripts/verify-macos-package.sh
 
+  ui-screenshot:
+    name: UI screenshot verify (temp)
+    needs: changes
+    if: needs.changes.outputs.swift == 'true'
+    runs-on: macos-14
+    timeout-minutes: 40
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Swift
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "6.2"
+
+      - name: Prepare verified SwiftPM cache
+        uses: ./.github/actions/prepare-macos-dependency-cache
+        with:
+          swiftpm: "true"
+
+      - name: Build macOS app (debug)
+        run: |
+          chmod +x scripts/*.sh
+          scripts/build-macos.sh --configuration debug
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "13.0"
+
+      - name: Assemble .app bundle
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            arm64) TRIPLE="arm64-apple-macosx" ;;
+            x86_64) TRIPLE="x86_64-apple-macosx" ;;
+          esac
+          APP_DIR="ui-verify/Lithe.app"
+          mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources/OfficialPlugins" "$APP_DIR/Contents/Helpers"
+          cp ".build/$TRIPLE/debug/Lithe" "$APP_DIR/Contents/MacOS/Lithe"
+          cp Resources/Info.plist "$APP_DIR/Contents/Info.plist"
+          cp Resources/AppIcon.icns "$APP_DIR/Contents/Resources/AppIcon.icns" 2>/dev/null || true
+          [ -d Resources/IDEAIcons ] && cp -R Resources/IDEAIcons "$APP_DIR/Contents/Resources/" || true
+          [ -d Resources/DatabaseIcons ] && cp -R Resources/DatabaseIcons "$APP_DIR/Contents/Resources/" || true
+          [ -d Resources/Fonts ] && cp -R Resources/Fonts "$APP_DIR/Contents/Resources/" || true
+          for loc in en.lproj zh-Hans.lproj; do
+            [ -d "Resources/$loc" ] && cp -R "Resources/$loc" "$APP_DIR/Contents/Resources/" || true
+          done
+          codesign --force --deep --sign - "$APP_DIR" || true
+          echo "APP_DIR=$APP_DIR" >> "$GITHUB_ENV"
+          echo "Built bundle:"
+          ls -la "$APP_DIR/Contents/MacOS/"
+
+      - name: Launch app and capture screenshots
+        run: |
+          set -uo pipefail
+          mkdir -p ui-shots
+          open -n "$APP_DIR"
+          echo "Launched. Waiting for window to render..."
+          sleep 25
+          screencapture -x ui-shots/01-fullscreen.png || echo "screencapture failed"
+          LITHE_PID=$(pgrep -f "Lithe.app/Contents/MacOS/Lithe" | head -1 || true)
+          echo "Lithe PID: ${LITHE_PID:-none}"
+          if [ -n "${LITHE_PID:-}" ]; then
+            osascript <<'APPLESCRIPT' || true
+              tell application "System Events"
+                set procs to every process whose name contains "Lithe"
+                repeat with p in procs
+                  try
+                    set winCount to count of windows of p
+                    log "Process " & (name of p) & " has " & winCount & " window(s)"
+                    if winCount > 0 then
+                      set w to window 1 of p
+                      log "Window 1: pos=" & (item 1 of position of w) & "," & (item 2 of position of w) & " size=" & (item 1 of size of w) & "x" & (item 2 of size of w)
+                    end if
+                  end try
+                end repeat
+              end tell
+            APPLESCRIPT
+            sleep 3
+            screencapture -x ui-shots/02-after-render.png || true
+          fi
+          sleep 10
+          screencapture -x ui-shots/03-settled.png || true
+          osascript <<'APPLESCRIPT' > ui-shots/window-hierarchy.txt 2>&1 || true
+            tell application "System Events"
+              set procs to every process whose name contains "Lithe"
+              repeat with p in procs
+                try
+                  set winCount to count of windows of p
+                  log "=== " & (name of p) & " : " & winCount & " window(s) ==="
+                  repeat with i from 1 to winCount
+                    set w to window i of p
+                    try
+                      log "  Window " & i & ": " & (name of w) & " | pos=" & (item 1 of position of w) & "," & (item 2 of position of w) & " | size=" & (item 1 of size of w) & "x" & (item 2 of size of w)
+                    on error
+                      log "  Window " & i & ": (no name/pos)"
+                    end try
+                  end repeat
+                end try
+              end repeat
+            end tell
+          APPLESCRIPT
+          echo "=== Screenshots ==="
+          ls -la ui-shots/
+          echo "=== Window hierarchy ==="
+          cat ui-shots/window-hierarchy.txt 2>/dev/null || echo "(no hierarchy dump)"
+          pkill -f "Lithe.app/Contents/MacOS/Lithe" 2>/dev/null || true
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-screenshots
+          path: ui-shots/
+          retention-days: 14
+
   gate:
     name: macOS CI gate
     needs:
