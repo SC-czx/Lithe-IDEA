@@ -360,6 +360,42 @@ jobs:
           osascript -e 'tell application "System Events" to set frontmost of (first process whose name contains "Lithe") to true' 2>/dev/null || true
           sleep 2
 
+          # Dismiss the update dialog (click "Later" button) so it doesn't block drags
+          echo "=== Dismissing update dialog ==="
+          osascript <<'DIALOG' 2>/dev/null || true
+            tell application "System Events"
+              tell (first process whose name contains "Lithe")
+                try
+                  set dlg to sheet 1 of window 1
+                  set btns to every button of dlg
+                  repeat with b in btns
+                    if (name of b) is "Later" then
+                      click b
+                      log "Clicked Later"
+                      exit repeat
+                    end if
+                  end repeat
+                end try
+              end tell
+            end tell
+          DIALOG
+          sleep 3
+          screencapture -x ui-shots/00b-after-dismiss.png || true
+
+          # Open main.py from the project tree (double-click the file row) to create a tab
+          echo "=== Opening main.py to create a tab ==="
+          # Project tree is in left sidebar (~x=WX+180). Files are listed below the project root.
+          # main.py is typically the 2nd-4th row. Try double-clicking at a few candidate positions.
+          TREE_X=$((WX + 120))
+          for ROW_Y in $((WY + 160)) $((WY + 185)) $((WY + 210)) $((WY + 235)); do
+            cliclick "dc:$TREE_X,$ROW_Y" 2>/dev/null || true
+            sleep 2
+            # Check if a tab appeared (window title changes or editor shows)
+            screencapture -x /tmp/tab-check.png 2>/dev/null || true
+          done
+          sleep 3
+          screencapture -x ui-shots/00c-after-open-file.png || true
+
           # Window geometry (assume full-screen-ish on runner; adjust by probing)
           # Runner display is typically 1920x1080 or similar. Use relative coords.
           # Tab bar: top-center area. Left dock: left edge. Right dock: right edge. Bottom: bottom edge.
