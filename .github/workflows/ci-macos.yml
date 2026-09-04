@@ -281,6 +281,29 @@ jobs:
           echo "Built bundle:"
           ls -la "$APP_DIR/Contents/MacOS/"
 
+      - name: Write AppleScript helpers
+        run: |
+          cat > /tmp/lithe-windows.applescript <<'EOF'
+          tell application "System Events"
+            set procs to every process whose name contains "Lithe"
+            repeat with p in procs
+              try
+                set winCount to count of windows of p
+                log "Process " & (name of p) & " has " & winCount & " window(s)"
+                repeat with i from 1 to winCount
+                  set w to window i of p
+                  try
+                    log "  Window " & i & ": " & (name of w) & " | pos=" & (item 1 of position of w) & "," & (item 2 of position of w) & " | size=" & (item 1 of size of w) & "x" & (item 2 of size of w)
+                  on error
+                    log "  Window " & i & ": (no name/pos)"
+                  end try
+                end repeat
+              end try
+            end repeat
+          end tell
+          EOF
+          chmod +x /tmp/lithe-windows.applescript
+
       - name: Launch app and capture screenshots
         run: |
           set -uo pipefail
@@ -292,45 +315,13 @@ jobs:
           LITHE_PID=$(pgrep -f "Lithe.app/Contents/MacOS/Lithe" | head -1 || true)
           echo "Lithe PID: ${LITHE_PID:-none}"
           if [ -n "${LITHE_PID:-}" ]; then
-            osascript <<'APPLESCRIPT' || true
-              tell application "System Events"
-                set procs to every process whose name contains "Lithe"
-                repeat with p in procs
-                  try
-                    set winCount to count of windows of p
-                    log "Process " & (name of p) & " has " & winCount & " window(s)"
-                    if winCount > 0 then
-                      set w to window 1 of p
-                      log "Window 1: pos=" & (item 1 of position of w) & "," & (item 2 of position of w) & " size=" & (item 1 of size of w) & "x" & (item 2 of size of w)
-                    end if
-                  end try
-                end repeat
-              end tell
-            APPLESCRIPT
+            osascript /tmp/lithe-windows.applescript || true
             sleep 3
             screencapture -x ui-shots/02-after-render.png || true
           fi
           sleep 10
           screencapture -x ui-shots/03-settled.png || true
-          osascript <<'APPLESCRIPT' > ui-shots/window-hierarchy.txt 2>&1 || true
-            tell application "System Events"
-              set procs to every process whose name contains "Lithe"
-              repeat with p in procs
-                try
-                  set winCount to count of windows of p
-                  log "=== " & (name of p) & " : " & winCount & " window(s) ==="
-                  repeat with i from 1 to winCount
-                    set w to window i of p
-                    try
-                      log "  Window " & i & ": " & (name of w) & " | pos=" & (item 1 of position of w) & "," & (item 2 of position of w) & " | size=" & (item 1 of size of w) & "x" & (item 2 of size of w)
-                    on error
-                      log "  Window " & i & ": (no name/pos)"
-                    end try
-                  end repeat
-                end try
-              end repeat
-            end tell
-          APPLESCRIPT
+          osascript /tmp/lithe-windows.applescript > ui-shots/window-hierarchy.txt 2>&1 || true
           echo "=== Screenshots ==="
           ls -la ui-shots/
           echo "=== Window hierarchy ==="
